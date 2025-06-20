@@ -1,9 +1,9 @@
 import { fail, redirect } from "@sveltejs/kit";
 
 export const load = async ({ locals }: any) => {
-  // If the user is already logged in, redirect to home
+  // If the user is already logged in, redirect to dashboard
   if (locals.user) {
-    throw redirect(303, "/");
+    throw redirect(303, "/dashboard");
   }
 
   return {};
@@ -32,8 +32,8 @@ export const actions = {
 
         console.log("Login successful:", authData.record.id);
 
-        // Redirect to home page after successful login
-        throw redirect(303, "/");
+        // Redirect to dashboard after successful login
+        throw redirect(303, "/dashboard");
       } catch (err) {
         console.error("PocketBase auth error:", err);
 

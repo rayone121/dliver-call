@@ -1,0 +1,430 @@
+<script lang="ts">
+    import { onMount, onDestroy } from "svelte";
+    import { apiClient } from "$lib/services/apiClient";
+    import { apiClientSettings } from "$lib/models/apiClient";
+    import DashboardNav from "$lib/components/DashboardNav.svelte";
+    import Card from "$lib/components/Card.svelte";
+    import Button from "$lib/components/Button.svelte";
+    import Alert from "$lib/components/Alert.svelte";
+
+    export let data;
+
+    let sim: number;
+    let active: boolean;
+    let description: string;
+
+    interface CallStatus {
+        active: boolean;
+        sim_states?: Array<{
+            sim: number;
+            active: boolean;
+            description: string;
+        }>;
+    }
+
+    interface ApiResponse {
+        message?: string;
+    }
+
+    let callStatus: CallStatus | null = null;
+    let loading = true;
+    let callLoading = false;
+    let hangupLoading = false;
+    let hangupTimeout: ReturnType<typeof setTimeout> | null = null;
+    let hangupTimeoutActive = false;
+    let hangupTimeoutSeconds = 3;
+    let statusInterval: ReturnType<typeof setInterval> | null = null;
+    let phoneNumber = "";
+    let simSlot: number | undefined = undefined;
+    let errorMessage = "";
+    let successMessage = "";
+
+    $: hasApiSettings = !!(
+        $apiClientSettings?.host && $apiClientSettings?.apiKey
+    );
+
+    const keys: string[] = [
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "*",
+        "0",
+        "#",
+    ];
+
+    let inputEl: HTMLInputElement;
+
+    // Fix for long press variables
+    let longPressTimer: ReturnType<typeof setTimeout> | null = null;
+    let longPressCompleted = false;
+
+    onMount(async () => {
+        if (hasApiSettings) {
+            await loadData();
+            statusInterval = setInterval(fetchCallStatus, 3000);
+        } else {
+            console.error(
+                "API settings not configured. Please configure them in the dashboard.",
+            );
+            loading = false;
+        }
+    });
+
+    onDestroy(() => {
+        if (statusInterval) clearInterval(statusInterval);
+        if (hangupTimeout) clearTimeout(hangupTimeout);
+    });
+
+    async function loadData() {
+        loading = true;
+        errorMessage = "";
+        try {
+            await fetchCallStatus();
+        } catch (error) {
+            console.error("Error loading data:", error);
+            errorMessage = `Error loading data: ${error instanceof Error ? error.message : String(error)}`;
+        } finally {
+            loading = false;
+        }
+    }
+
+    async function fetchCallStatus() {
+        try {
+            if (hasApiSettings) {
+                callStatus = await apiClient.getCallStatus();
+            }
+        } catch (error) {
+            console.error("Error fetching call status:", error);
+            // Don't set error message here to avoid spamming the user
+        }
+    }
+
+    function handleKeyPress(key: string) {
+        if (phoneNumber.length < 15) {
+            phoneNumber += key;
+        }
+    }
+
+    function handleDelete() {
+        phoneNumber = phoneNumber.slice(0, -1);
+    }
+
+    function handleCall() {
+        if (phoneNumber) {
+            makeCall();
+        }
+    }
+
+    function handleLongPressStart(key: string) {
+        if (key === "0") {
+            longPressTimer = setTimeout(() => {
+                phoneNumber += "+";
+                longPressCompleted = true;
+                longPressTimer = null;
+            }, 800);
+        }
+    }
+
+    function handleLongPressEnd() {
+        if (longPressTimer) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+        }
+        if (longPressCompleted) {
+            setTimeout(() => {
+                longPressCompleted = false;
+            }, 100);
+        }
+    }
+
+    function formatPhoneNumber(number: string) {
+        if (number.includes("+")) return number;
+        if (number.length <= 3) return number;
+        if (number.length <= 6)
+            return `(${number.slice(0, 3)}) ${number.slice(3)}`;
+        return `(${number.slice(0, 3)}) ${number.slice(3, 6)}-${number.slice(6)}`;
+    }
+
+    function handleInputChange(event: Event) {
+        const target = event.target as HTMLInputElement;
+        const value = target.value;
+        const cleaned = value.replace(/[^\d+]/g, "");
+        if (cleaned.includes("+") && !cleaned.startsWith("+")) {
+            const withoutPlus = cleaned.replace(/\+/g, "");
+            phoneNumber = "+" + withoutPlus;
+        } else {
+            phoneNumber = cleaned;
+        }
+    }
+
+    function handleDialerClick() {
+        inputEl.focus();
+    }
+
+    async function makeCall() {
+        if (!hasApiSettings) {
+            errorMessage =
+                "API settings are not configured. Please configure them in the dashboard.";
+            return;
+        }
+
+        if (!phoneNumber) {
+            errorMessage = "Please enter a phone number";
+            return;
+        }
+        callLoading = true;
+        errorMessage = "";
+        successMessage = "";
+        try {
+            const result: ApiResponse = await apiClient.makeCall(
+                phoneNumber,
+                simSlot,
+            );
+            successMessage = result.message || "Call initiated successfully";
+            phoneNumber = "";
+        } catch (error) {
+            console.error("Error making call:", error);
+            errorMessage = `Error making call: ${error instanceof Error ? error.message : String(error)}`;
+        } finally {
+            callLoading = false;
+        }
+    }
+
+    async function hangupCall() {
+        if (!hasApiSettings) {
+            errorMessage =
+                "API settings are not configured. Please configure them in the dashboard.";
+            return;
+        }
+
+        hangupLoading = true;
+        errorMessage = "";
+        successMessage = "";
+        try {
+            const result: ApiResponse = await apiClient.hangupCall();
+            successMessage = result.message || "Call ended successfully";
+            hangupTimeoutActive = true;
+            hangupTimeoutSeconds = 3;
+            hangupTimeout = setInterval(() => {
+                hangupTimeoutSeconds--;
+                if (hangupTimeoutSeconds <= 0) {
+                    if (hangupTimeout) clearInterval(hangupTimeout);
+                    hangupTimeout = null;
+                    hangupTimeoutActive = false;
+                }
+            }, 1000);
+        } catch (error) {
+            console.error("Error hanging up call:", error);
+            errorMessage = `Error hanging up call: ${error instanceof Error ? error.message : String(error)}`;
+        } finally {
+            hangupLoading = false;
+        }
+    }
+
+    let activeTab = "call"; // 'call' or 'recordings'
+</script>
+
+<div class="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100">
+    <div class="container mx-auto px-4 py-8">
+        <DashboardNav user={data.user} />
+        
+        <div class="max-w-4xl mx-auto">
+            <div class="text-center mb-8">
+                <h1 class="text-4xl font-bold text-gray-900 mb-2">Call Center</h1>
+                <p class="text-gray-600">Manage your calls with ease</p>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                <!-- Status Card -->
+                <div class="bg-white rounded-2xl shadow-lg p-6">
+                    <h2 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <svg class="w-5 h-5 mr-2 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M2 3a1 1 0 011-1h2.153a1 1 0 01.986.836l.74 4.435a1 1 0 01-.54 1.06l-1.548.773a11.037 11.037 0 006.105 6.105l.774-1.548a1 1 0 011.059-.54l4.435.74a1 1 0 01.836.986V17a1 1 0 01-1 1h-2C7.82 18 2 12.18 2 5V3z" />
+                        </svg>
+                        Call Status
+                    </h2>
+                    <div class="space-y-4">
+                        <div class="flex items-center justify-center">
+                            {#if callStatus?.active}
+                                <div class="flex items-center space-x-2 bg-red-50 text-red-700 px-4 py-2 rounded-lg">
+                                    <div class="w-3 h-3 bg-red-500 rounded-full animate-pulse"></div>
+                                    <span class="font-medium">Call Active</span>
+                                </div>
+                            {:else}
+                                <div class="flex items-center space-x-2 bg-green-50 text-green-700 px-4 py-2 rounded-lg">
+                                    <div class="w-3 h-3 bg-green-500 rounded-full"></div>
+                                    <span class="font-medium">Ready</span>
+                                </div>
+                            {/if}
+                        </div>
+                        
+                        {#if callStatus?.sim_states?.length}
+                            <div class="space-y-2">
+                                <h3 class="text-sm font-medium text-gray-700">SIM Status</h3>
+                                <div class="grid grid-cols-1 gap-2">
+                                    {#each callStatus.sim_states as simState}
+                                        <div class="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                                            <span class="text-sm font-medium text-gray-700">SIM {simState.sim + 1}</span>
+                                            <div class="flex items-center space-x-2">
+                                                <div class="w-2 h-2 rounded-full {simState.active ? 'bg-red-500' : 'bg-gray-400'}"></div>
+                                                <span class="text-xs text-gray-600">{simState.description}</span>
+                                            </div>
+                                        </div>
+                                    {/each}
+                                </div>
+                            </div>
+                        {/if}
+                    </div>
+                </div>
+                
+                <!-- Dialer Card -->
+                <div class="bg-white rounded-2xl shadow-lg p-6">
+                    <h2 class="text-xl font-semibold text-gray-800 mb-4 flex items-center">
+                        <svg class="w-5 h-5 mr-2 text-blue-600" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd" />
+                        </svg>
+                        Make a Call
+                    </h2>
+                    <div class="space-y-6">
+                        <div class="relative">
+                            <input
+                                bind:this={inputEl}
+                                type="tel"
+                                class="w-full text-xl text-center font-medium h-12 px-4 py-2 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                                placeholder="Enter phone number"
+                                value={formatPhoneNumber(phoneNumber)}
+                                on:input={handleInputChange}
+                            />
+                        </div>
+                        <div class="grid grid-cols-3 gap-3">
+                            {#each keys as key}
+                                <button
+                                    class="h-14 w-14 flex items-center justify-center text-xl font-semibold rounded-xl bg-gray-50 hover:bg-blue-50 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all relative mx-auto"
+                                    on:click={() => handleKeyPress(key.toString())}
+                                    on:mousedown={() => handleLongPressStart(key.toString())}
+                                    on:mouseup={handleLongPressEnd}
+                                    on:mouseleave={handleLongPressEnd}
+                                    on:touchstart={() => handleLongPressStart(key.toString())}
+                                    on:touchend={handleLongPressEnd}
+                                    type="button"
+                                >
+                                    {key}
+                                    {#if key === "0"}
+                                        <span class="absolute bottom-1 right-1 text-xs text-gray-400">+</span>
+                                    {/if}
+                                </button>
+                            {/each}
+                        </div>
+                        
+                        <div class="flex justify-center">
+                            <button
+                                class="h-12 w-12 flex items-center justify-center rounded-xl bg-gray-100 hover:bg-red-100 hover:text-red-600 text-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500 transition-all disabled:opacity-50"
+                                on:click={handleDelete}
+                                disabled={phoneNumber === ""}
+                                type="button"
+                                aria-label="Delete"
+                            >
+                                <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+                                </svg>
+                            </button>
+                        </div>
+                        <div class="space-y-2">
+                            <label class="block text-sm font-medium text-gray-700">SIM Selection</label>
+                            <div class="flex rounded-lg bg-gray-100 p-1">
+                                <button
+                                    class="flex-1 px-3 py-2 text-sm font-medium rounded-md transition-all {simSlot === undefined ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800'}"
+                                    type="button"
+                                    on:click={() => (simSlot = undefined)}
+                                >Default</button>
+                                <button
+                                    class="flex-1 px-3 py-2 text-sm font-medium rounded-md transition-all {simSlot === 0 ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800'}"
+                                    type="button"
+                                    on:click={() => (simSlot = 0)}
+                                >SIM 1</button>
+                                <button
+                                    class="flex-1 px-3 py-2 text-sm font-medium rounded-md transition-all {simSlot === 1 ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:text-gray-800'}"
+                                    type="button"
+                                    on:click={() => (simSlot = 1)}
+                                >SIM 2</button>
+                            </div>
+                        </div>
+                        <div class="flex gap-3">
+                            <button
+                                on:click={makeCall}
+                                disabled={callLoading || !phoneNumber}
+                                class="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-xl font-semibold hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 transition-all"
+                            >
+                                {#if callLoading}
+                                    <svg class="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+                                    </svg>
+                                    Calling...
+                                {:else}
+                                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                                    </svg>
+                                    Call
+                                {/if}
+                            </button>
+                            <button
+                                on:click={hangupCall}
+                                disabled={hangupLoading || !callStatus?.active || hangupTimeoutActive}
+                                class="flex-1 flex items-center justify-center gap-2 px-6 py-3 bg-red-600 text-white rounded-xl font-semibold hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 disabled:opacity-50 transition-all"
+                            >
+                                {#if hangupLoading}
+                                    <svg class="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+                                    </svg>
+                                    Hanging up...
+                                {:else if hangupTimeoutActive}
+                                    <svg class="animate-spin h-5 w-5" fill="none" viewBox="0 0 24 24">
+                                        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+                                    </svg>
+                                    Wait ({hangupTimeoutSeconds}s)
+                                {:else}
+                                    <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 8l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2M3 3l18 18" />
+                                    </svg>
+                                    Hang Up
+                                {/if}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            {#if errorMessage}
+                <div class="mt-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+                    {errorMessage}
+                </div>
+            {/if}
+            
+            {#if successMessage}
+                <div class="mt-6 bg-green-50 border border-green-200 text-green-700 px-4 py-3 rounded-lg">
+                    {successMessage}
+                </div>
+            {/if}
+            
+            {#if loading}
+                <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div class="bg-white rounded-lg p-8 flex items-center space-x-4">
+                        <svg class="animate-spin h-8 w-8 text-blue-500" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"></path>
+                        </svg>
+                        <span class="text-gray-700">Loading...</span>
+                    </div>
+                </div>
+            {/if}
+        </div>
+    </div>
+</div>

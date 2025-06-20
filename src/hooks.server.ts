@@ -15,8 +15,7 @@ export const handle: Handle = async ({ event, resolve }) => {
             await event.locals.pb.collection('users').authRefresh();
         }
     } catch (err) {
-        console.error('Auth refresh error:', err);
-        // Clear the auth store on failed refresh
+        // Clear the auth and continue
         event.locals.pb.authStore.clear();
     }
     
