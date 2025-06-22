@@ -1,6 +1,5 @@
 import { redirect, fail } from "@sveltejs/kit";
 import type { PageServerLoad, Actions } from './$types';
-import { fetchApiClientSettings } from '$lib/models/apiClient';
 
 export const load: PageServerLoad = async ({ locals }) => {
   const { pb, user } = locals;
@@ -10,91 +9,32 @@ export const load: PageServerLoad = async ({ locals }) => {
     throw redirect(303, "/login");
   }
   
-  let apiClientSettings = null;
-  let callLogs = [];
+  let clients: any = [];
   
   try {
-    apiClientSettings = await fetchApiClientSettings(pb, user.id);
-  } catch (error) {
-    console.error('Error fetching API client settings:', error);
-  }
-  
-  try {
-    // Fetch call logs for the current user with expanded relations
-    console.log('Fetching call logs for user:', user.id);
-    const records = await pb.collection('call_logs').getList(1, 50, {
-      filter: `user="${user.id}"`,
-      sort: '-created',
-      expand: 'client_name' // Expand the client relation to get client data
+    // Fetch all clients from PocketBase
+    const records = await pb.collection('clients').getFullList({
+      sort: 'name',
     });
     
-    console.log('Found call logs:', records.items.length);
-    
-    callLogs = records.items.map(record => ({
+    clients = records.map(record => ({
       id: record.id,
-      clientName: record.expand?.client_name?.name || 'Unknown',
-      phoneNumber: record.expand?.client_name?.phone || '',
-      created: record.created,
-      duration: record.duration || 0,
-      status: record.status || 'completed'
+      name: record.name || '',
+      vat: record.vat || '',
+      phone: record.phone || '',
+      email: record.email || ''
     }));
   } catch (error) {
-    console.error('Error fetching call logs:', error);
-    console.error('Error details:', error);
+    console.error('Error fetching clients:', error);
   }
   
   return {
     user,
-    apiClientSettings,
-    callLogs
+    clients
   };
 };
 
 export const actions: Actions = {
-  endCall: async ({ locals, request }) => {
-    const { pb, user } = locals;
-
-    if (!user) {
-      throw redirect(303, "/login");
-    }
-
-    const formData = await request.formData();
-    const callLogId = formData.get('callLogId')?.toString();
-
-    if (!callLogId) {
-      return fail(400, {
-        success: false,
-        message: "Call log ID is required"
-      });
-    }
-
-    try {
-      // Update the most recent call log status to 'Ended'
-      const records = await pb.collection('call_logs').getList(1, 1, {
-        filter: `user="${user.id}" && status="Initiated"`,
-        sort: '-created'
-      });
-
-      if (records.items.length > 0) {
-        await pb.collection('call_logs').update(records.items[0].id, {
-          status: 'Ended'
-        });
-        
-        console.log('Updated call log status to Ended:', records.items[0].id);
-      }
-
-      return {
-        success: true,
-        message: "Call ended successfully"
-      };
-    } catch (error) {
-      console.error('Error ending call:', error);
-      return fail(500, {
-        success: false,
-        message: `Error ending call: ${error instanceof Error ? error.message : String(error)}`
-      });
-    }
-  },
   logCall: async ({ locals, request }) => {
     const { pb, user } = locals;
 
@@ -114,7 +54,7 @@ export const actions: Actions = {
     }
 
     try {
-      console.log('Creating call log with data:', {
+      console.log('Contacts - Creating call log with data:', {
         user: user.id,
         clientName,
         phoneNumber
@@ -124,34 +64,34 @@ export const actions: Actions = {
       let clientRecord;
       
       // Normalize phone number for comparison (remove +, 0 prefix, spaces, dashes)
-      function normalizePhone(phone) {
+      function normalizePhone(phone: string): string {
         return phone.replace(/[^\d]/g, '').replace(/^0+/, '');
       }
       
       const normalizedInputPhone = normalizePhone(phoneNumber);
-      console.log('Normalized input phone:', normalizedInputPhone);
+      console.log('Contacts - Normalized input phone:', normalizedInputPhone);
       
       try {
         let clients;
         
         if (clientName === 'Manual Dial') {
           // For manual dial, search all clients by phone number only
-          console.log('Manual dial - searching all clients by phone');
+          console.log('Contacts - Manual dial - searching all clients by phone');
           clients = await pb.collection('clients').getFullList();
         } else {
           // For contact calls, search by name first
-          console.log('Contact call - searching by name:', clientName);
+          console.log('Contacts - Contact call - searching by name:', clientName);
           clients = await pb.collection('clients').getFullList({
             filter: `name="${clientName}"`
           });
         }
         
-        console.log('Found clients to check:', clients.length);
+        console.log('Contacts - Found clients to check:', clients.length);
         
         // Find client with matching phone using substring matching
         clientRecord = clients.find(client => {
           const normalizedClientPhone = normalizePhone(client.phone || '');
-          console.log('Comparing:', normalizedInputPhone, 'vs', normalizedClientPhone, 'for client:', client.name);
+          console.log('Contacts - Comparing:', normalizedInputPhone, 'vs', normalizedClientPhone, 'for client:', client.name);
           
           // Check if either phone contains the other (for cases like 0774463442 vs 40774463442)
           const phoneMatch = normalizedInputPhone.includes(normalizedClientPhone) || 
@@ -159,7 +99,7 @@ export const actions: Actions = {
                            normalizedInputPhone === normalizedClientPhone;
           
           if (phoneMatch) {
-            console.log('Phone match found for client:', client.name);
+            console.log('Contacts - Phone match found for client:', client.name);
           }
           
           return phoneMatch;
@@ -169,9 +109,9 @@ export const actions: Actions = {
           throw new Error('No matching client found');
         }
         
-        console.log('Found existing client:', clientRecord.id, clientRecord.name);
-      } catch (error) {
-        console.log('Client not found in database:', error.message);
+        console.log('Contacts - Found existing client:', clientRecord.id, clientRecord.name);
+      } catch (error: any) {
+        console.log('Contacts - Client not found in database:', error.message);
         return fail(400, {
           success: false,
           message: "Client not found. Please add the client to your contacts first."
@@ -184,15 +124,15 @@ export const actions: Actions = {
         status: 'Initiated'
       });
       
-      console.log('Call log created successfully:', record.id);
+      console.log('Contacts - Call log created successfully:', record.id);
       
       return {
         success: true,
         message: "Call logged successfully"
       };
     } catch (error) {
-      console.error('Error logging call:', error);
-      console.error('Error details:', error);
+      console.error('Contacts - Error logging call:', error);
+      console.error('Contacts - Error details:', error);
       return fail(500, {
         success: false,
         message: `Error logging call: ${error instanceof Error ? error.message : String(error)}`

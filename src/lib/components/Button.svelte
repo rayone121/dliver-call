@@ -3,6 +3,8 @@
   export let variant: "primary" | "secondary" | "danger" = "primary";
   export let disabled: boolean = false;
   export let className: string = "";
+  let cls: string = ""; // Alternative class binding
+  export { cls as class };
 </script>
 
 <button
@@ -14,9 +16,10 @@
       ? "bg-gray-100 hover:bg-gray-200 text-gray-800 border border-gray-300"
       : "bg-red-600 hover:bg-red-700 text-white"}
     ${disabled ? "opacity-50 cursor-not-allowed" : ""}
-    ${className}
+    ${className} ${cls}
   `}
   disabled={disabled}
+  on:click
 >
   <slot />
 </button>
